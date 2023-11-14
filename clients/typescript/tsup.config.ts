@@ -6,6 +6,11 @@ let entry = Object.values(packageJson.exports)
   .filter((path) => path.startsWith('./dist/') && path.endsWith('.js'))
   .map((path) => path.replace('./dist/', './src/').replace('.js', '.ts'))
 
+// Add bin scripts
+Object.values(packageJson.bin).map((path) => {
+  entry.push(path.replace('./dist/', './src/').replace('.js', '.ts'))
+})
+
 // Add entry points from typesVersions
 Object.values(packageJson.typesVersions['*']).map((paths: string[]) => {
   paths.map((path) => {

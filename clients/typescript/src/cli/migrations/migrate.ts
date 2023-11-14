@@ -9,6 +9,7 @@ import { buildMigrations, getMigrationNames } from './builder'
 import { exec } from 'child_process'
 import { dedent } from 'ts-dedent'
 import Module from 'node:module'
+import type { Config } from '../config'
 
 // Rather than run `npx prisma` we resolve the path to the prisma binary so that
 // we can be sure we are using the same version of Prisma that is a dependency of
@@ -28,40 +29,16 @@ const appRoot = path.resolve() // path where the user ran `npx electric migrate`
 
 export const defaultPollingInterval = 1000 // in ms
 
-export function getDefaultOptions() {
-  let service
-  if (process.env.ELECTRIC_URL) {
-    service = process.env.ELECTRIC_URL
-  } else {
-    const port = process.env.ELECTRIC_HTTP_PORT ?? '5133'
-    service = `http://localhost:${port}`
-  }
-
-  let proxy
-  if (process.env.ELECTRIC_PG_PROXY_URL) {
-    proxy = process.env.ELECTRIC_PG_PROXY_URL
-  } else {
-    const port = process.env.ELECTRIC_PG_PROXY_PORT ?? '65432'
-    const password = process.env.ELECTRIC_PG_PROXY_PASSWORD ?? 'proxy_password'
-    proxy = `postgresql://prisma:${password}@localhost:${port}/electric`
-  }
-
-  const out =
-    process.env.ELECTRIC_CLIENT_PATH ??
-    path.join(appRoot, 'src/generated/client')
-
-  return {
-    service,
-    proxy,
-    out,
-    watch: false,
-    pollingInterval: defaultPollingInterval,
-  }
+export interface GeneratorOptions {
+  watch?: boolean
+  pollingInterval?: number
+  config: Config
 }
 
-export type GeneratorOptions = ReturnType<typeof getDefaultOptions>
-
 export async function generate(opts: GeneratorOptions) {
+  console.log('Generating Electric client...')
+  console.log('Service URL: ' + opts.config.SERVICE)
+  console.log('Proxy URL: ' + opts.config.PROXY)
   if (opts.watch) {
     watchMigrations(opts)
   } else {
@@ -74,7 +51,8 @@ export async function generate(opts: GeneratorOptions) {
  * to check for new migrations. Invokes `_generate`
  * when there are new migrations.
  */
-async function watchMigrations(opts: Omit<GeneratorOptions, 'watch'>) {
+async function watchMigrations(opts: GeneratorOptions) {
+  const config = opts.config
   const pollingInterval = opts.pollingInterval
   const pollMigrations = async () => {
     // Create a unique temporary folder in which to save
@@ -85,7 +63,7 @@ async function watchMigrations(opts: Omit<GeneratorOptions, 'watch'>) {
       // Read migrations.js file to check latest migration version
       const latestMigration = await getLatestMigration(opts)
 
-      let migrationEndpoint = opts.service + '/api/migrations?dialect=sqlite'
+      let migrationEndpoint = config.SERVICE + '/api/migrations?dialect=sqlite'
       if (latestMigration !== undefined) {
         // Only fetch new migrations
         migrationEndpoint = migrationEndpoint + `&version=${latestMigration}`
@@ -190,6 +168,7 @@ async function getLatestMigration(
  * @param configFolder Absolute path to the configuration folder.
  */
 async function _generate(opts: Omit<GeneratorOptions, 'watch'>) {
+  const config = opts.config
   // Create a unique temporary folder in which to save
   // intermediate files without risking collisions
   const tmpFolder = await fs.mkdtemp('.electric_migrations_tmp_')
@@ -197,7 +176,7 @@ async function _generate(opts: Omit<GeneratorOptions, 'watch'>) {
   try {
     const migrationsPath = path.join(tmpFolder, 'migrations')
     await fs.mkdir(migrationsPath)
-    const migrationEndpoint = opts.service + '/api/migrations?dialect=sqlite'
+    const migrationEndpoint = config.SERVICE + '/api/migrations?dialect=sqlite'
 
     const migrationsFolder = path.resolve(migrationsPath)
     const migrationsFile = migrationsFilePath(opts)
@@ -217,9 +196,8 @@ async function _generate(opts: Omit<GeneratorOptions, 'watch'>) {
     await pascalCaseTableNames(prismaSchema)
 
     // Generate a client from the Prisma schema
-    console.log('Generating Electric client...')
     await generateElectricClient(prismaSchema)
-    const relativePath = path.relative(appRoot, opts.out)
+    const relativePath = path.relative(appRoot, config.CLIENT_PATH)
     console.log(`Successfully generated Electric client at: ./${relativePath}`)
 
     // Build the migrations
@@ -239,14 +217,12 @@ async function _generate(opts: Omit<GeneratorOptions, 'watch'>) {
  * Creates a fresh Prisma schema in the provided folder.
  * The Prisma schema is initialised with a generator and a datasource.
  */
-async function createPrismaSchema(
-  folder: string,
-  { out, proxy }: Omit<GeneratorOptions, 'watch'>
-) {
+async function createPrismaSchema(folder: string, opts: GeneratorOptions) {
+  const config = opts.config
   const prismaDir = path.join(folder, 'prisma')
   const prismaSchemaFile = path.join(prismaDir, 'schema.prisma')
   await fs.mkdir(prismaDir)
-  const output = path.resolve(out)
+  const output = path.resolve(config.CLIENT_PATH)
   const schema = dedent`
     generator client {
       provider = "prisma-client-js"
@@ -260,7 +236,7 @@ async function createPrismaSchema(
 
     datasource db {
       provider = "postgresql"
-      url      = "${proxy}"
+      url      = "${config.PROXY}"
     }`
   await fs.writeFile(prismaSchemaFile, schema)
   return prismaSchemaFile
@@ -498,7 +474,7 @@ async function fetchMigrations(
 }
 
 function migrationsFilePath(opts: Omit<GeneratorOptions, 'watch'>) {
-  const outFolder = path.resolve(opts.out)
+  const outFolder = path.resolve(opts.config.CLIENT_PATH)
   return path.join(outFolder, 'migrations.ts')
 }
 
